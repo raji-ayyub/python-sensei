@@ -16,7 +16,7 @@ from app import get_tax_assistant
 load_dotenv()
 
 app = FastAPI(
-    title="PythonInfo",
+    title="Python Learning Assistant",
     description="Ask python related questions",
     version="1.0.0"
 )

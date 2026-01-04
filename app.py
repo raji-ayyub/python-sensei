@@ -128,7 +128,7 @@ class TaxAssistant:
     def _build_graph(self):
 
         def llm_node(state: MessagesState):
-            system = SystemMessage(content="You are a python programming informant")
+            system = SystemMessage(content="You are a python learning assistant")
             messages = [system] + state["messages"]
             llm_with_tools = self.llm.bind_tools(self.tools)
             response = llm_with_tools.invoke(messages)
