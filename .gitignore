@@ -1,0 +1,5 @@
+tax_env
+.env
+venv
+*.pdf
+docstore
