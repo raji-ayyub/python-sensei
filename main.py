@@ -5,9 +5,7 @@ from typing import Optional
 import os
 from dotenv import load_dotenv
 
-# Import routers and dependencies
-# from api import router as auth_router
-# from database.middleware import verify_token
+
 from app import get_python_assistant
 
 
@@ -30,8 +28,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# app.include_router(auth_router)
 
 
 
