@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 # Import routers and dependencies
 # from api import router as auth_router
 # from database.middleware import verify_token
-from app import get_tax_assistant
+from app import get_python_assistant
 
 
 
@@ -35,11 +35,8 @@ app.add_middleware(
 
 
 
-class TaxQuestion(BaseModel):
+class PythonQuestion(BaseModel):
     question: str
-
-class TaxImpactRequest(BaseModel):
-    monthly_income: float
 
 
 
@@ -67,14 +64,14 @@ def health_check():
 
 
 @app.post("/ask")
-def ask_tax_question(
-    request: TaxQuestion,
+def ask_python_question(
+    request: PythonQuestion,
     # user_info: dict = Depends(verify_token)
 ):
     """Ask a coding related question"""
     try:
         
-        assistant = get_tax_assistant()
+        assistant = get_python_assistant()
         # user_id = f"user_{user_info['user_id']}"
         user_id = f"user_1"
 

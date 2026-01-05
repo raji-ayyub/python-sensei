@@ -19,7 +19,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 load_dotenv()
 
 
-class TaxAssistant:
+class PythonAssistant:
     def __init__(self, pdf_directory="files", db_path="files/docstore"):
         self.api_key = os.getenv("OPENAI_API_KEY")
         self.pdf_directory = pdf_directory
@@ -166,8 +166,8 @@ class TaxAssistant:
 
 assistant = None
 
-def get_tax_assistant():
+def get_python_assistant():
     global assistant
     if assistant is None:
-        assistant = TaxAssistant()
+        assistant = PythonAssistant()
     return assistant
