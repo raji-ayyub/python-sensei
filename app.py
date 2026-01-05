@@ -20,7 +20,7 @@ load_dotenv()
 
 
 class PythonAssistant:
-    def __init__(self, pdf_directory="files", db_path="files/docstore"):
+    def __init__(self, pdf_directory="memory", db_path="memory/docstore"):
         self.api_key = os.getenv("OPENAI_API_KEY")
         self.pdf_directory = pdf_directory
         self.db_path = db_path
