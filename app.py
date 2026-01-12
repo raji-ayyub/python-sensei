@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.tools import tool
 from langchain_core.documents import Document
 
@@ -14,11 +14,10 @@ from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-
-load_dotenv()
-
 import logging
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
+
+load_dotenv()
 
 
 class PythonAssistant:
@@ -53,27 +52,22 @@ class PythonAssistant:
         # Checkpointer
         self.checkpointer = self._initialize_checkpointer()
 
-    # --------------------------------------------------
-    # Checkpointer
-    # --------------------------------------------------
-
-
     def _initialize_checkpointer(self):
         os.makedirs("memory", exist_ok=True)
         db_path = os.path.abspath("memory/conversations.db")
-
         conn = sqlite3.connect(db_path, check_same_thread=False)
         return SqliteSaver(conn)
 
-
-    # --------------------------------------------------
-    # Tools
-    # --------------------------------------------------
     def _setup_tools(self):
         @tool
         def retriever_tool(query: str) -> str:
             """Retrieve relevant documentation chunks."""
-            docs = self.vector_store.similarity_search(query, k=3)
+            retriever = self.vector_store.as_retriever(
+                search_type="mmr",
+                search_kwargs={"k": 5, "fetch_k": 15, "lambda_mult": 0.6},
+            )
+
+            docs = retriever.invoke(query)
 
             if not docs:
                 return "No relevant documents found."
@@ -87,10 +81,6 @@ class PythonAssistant:
 
         return [retriever_tool]
 
-
-    # --------------------------------------------------
-    # Document Loading
-    # --------------------------------------------------
     def _load_all_pdfs(self):
         documents = []
 
@@ -99,30 +89,29 @@ class PythonAssistant:
             return documents
 
         for filename in os.listdir(self.pdf_directory):
-            if filename.lower().endswith(".pdf"):
-                path = os.path.join(self.pdf_directory, filename)
-                with pdfplumber.open(path) as pdf:
-                    for i, page in enumerate(pdf.pages):
-                        text = page.extract_text() or ""
-                        if text.strip():
-                            documents.append(
-                                Document(
-                                    page_content=text,
-                                    metadata={
-                                        "source": filename,
-                                        "page": i + 1,
-                                    },
-                                )
-                            )
+            if not filename.lower().endswith(".pdf"):
+                continue
+
+            path = os.path.join(self.pdf_directory, filename)
+            with pdfplumber.open(path) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    text = page.extract_text() or ""
+                    if not text.strip():
+                        continue
+
+                    documents.append(
+                        Document(
+                            page_content=text,
+                            metadata={
+                                "source": filename,
+                                "page": i + 1,
+                            },
+                        )
+                    )
         return documents
 
-
-    # --------------------------------------------------
-    # Vector Store Init
-    # --------------------------------------------------
     def _initialize_vector_store(self):
         os.makedirs(self.db_path, exist_ok=True)
-
         chroma_path = os.path.join(self.db_path, "chroma.sqlite3")
 
         if os.path.exists(chroma_path):
@@ -152,69 +141,24 @@ class PythonAssistant:
             persist_directory=self.db_path,
         )
 
-
-    # --------------------------------------------------
-    # Retrieval Decision Node
-    # --------------------------------------------------
-  
-    def _needs_retrieval(self, state: MessagesState):
-        """Determine if we need retrieval. Returns the next node name."""
-        question = state["messages"][-1].content
-
-        prompt = f"""
-    Decide whether this question requires retrieval from documentation.
-
-    Answer ONLY one word:
-    - RETRIEVE (needs docs, APIs, standards, files)
-    - NO_RETRIEVE (general Python knowledge)
-
-    Question:
-    {question}
-    """
-
-        decision = self.llm.invoke(
-            [HumanMessage(content=prompt)]
-        ).content.strip()
-
-        if "RETRIEVE" in decision:
-            return "retrieve_route"  
-        else:
-            return "direct_answer"   
-        
-
-
-    # --------------------------------------------------
-    # Graph
-    # --------------------------------------------------
     def _build_graph(self):
         def assistant_node(state: MessagesState):
             system = SystemMessage(
                 content=(
-                    "You are a Python assistant. "
-                    "Use tools ONLY when documentation is required."
+                    "You are a Python assistant. Only answer questions relating to python, otherwise decline, explaining you are only a python learrnig assistant."
+                    "Answer using general Python knowledge ONLY when user asks the most basic python questions that requires just definition and no extended responses. "
+                    "If the user asks about standards, medium or advanced python questions, use the retrieval tool."
+                    "also use retrieval when question requires extendend response than just definition."
+                    "Otherwise, answer directly ONLY for the most basic python knowledge."
                 )
             )
 
             messages = [system] + state["messages"]
             llm_with_tools = self.llm.bind_tools(self.tools)
             response = llm_with_tools.invoke(messages)
-
             return {"messages": [response]}
 
-        def direct_answer_node(state: MessagesState):
-            """Answer directly without retrieval."""
-            system = SystemMessage(
-                content=(
-                    "You are a Python assistant. "
-                    "Answer the question based on your general knowledge of Python."
-                )
-            )
-
-            messages = [system] + state["messages"]
-            response = self.llm.invoke(messages)
-            return {"messages": [response]}
-
-        def should_use_tools(state: MessagesState):
+        def check_tool_usage(state: MessagesState):
             last = state["messages"][-1]
             if hasattr(last, "tool_calls") and last.tool_calls:
                 return "tools"
@@ -222,32 +166,15 @@ class PythonAssistant:
 
         builder = StateGraph(MessagesState)
 
-        # Add nodes
         builder.add_node("assistant", assistant_node)
-        builder.add_node("direct_answer", direct_answer_node)
         builder.add_node("tools", self.tool_node)
 
-        builder.add_conditional_edges(
-            START,
-            self._needs_retrieval, 
-            {
-                "retrieve_route": "assistant",
-                "direct_answer": "direct_answer"
-            }
-        )
-        
-        builder.add_conditional_edges("assistant", should_use_tools)
+        builder.add_edge(START, "assistant")
+        builder.add_conditional_edges("assistant", check_tool_usage)
         builder.add_edge("tools", "assistant")
-        
-        builder.add_edge("direct_answer", END)
 
         return builder
-    
 
-
-        # --------------------------------------------------
-        # Public API 
-        # --------------------------------------------------
     def ask_question(self, question: str, user_id: str = "default"):
         agent = self.builder.compile(checkpointer=self.checkpointer)
 
