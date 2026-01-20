@@ -1,104 +1,192 @@
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional
+# from fastapi import FastAPI, Depends, HTTPException, status
+# from fastapi.middleware.cors import CORSMiddleware
+# from pydantic import BaseModel
+# from typing import Optional
+# import os
+# from dotenv import load_dotenv
+
+
+# from app import get_python_assistant
+
+
+
+
+# load_dotenv()
+
+# app = FastAPI(
+#     title="Python Learning Assistant",
+#     description="Ask python related questions",
+#     version="1.0.0"
+# )
+
+# # CORS middleware
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],  
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+
+
+
+# class PythonQuestion(BaseModel):
+#     question: str
+
+
+
+
+
+# @app.get("/")
+# def home():
+#     return {
+#         "message": "Welcome to Python Dojo",
+        
+#     }
+
+
+
+# @app.get("/health")
+# def health_check():
+#     """Health check endpoint."""
+#     return {
+#         "status": "healthy",
+#         "service": "Python guru is up and running"
+#     }
+
+
+
+
+
+# @app.post("/ask")
+# def ask_python_question(
+#     request: PythonQuestion,
+#     # user_info: dict = Depends(verify_token)
+# ):
+#     """Ask a coding related question"""
+#     try:
+        
+#         assistant = get_python_assistant()
+#         # user_id = f"user_{user_info['user_id']}"
+#         user_id = f"user_1"
+
+        
+#         response = assistant.ask_question(
+#             question=request.question,
+#             user_id=user_id
+#         )
+        
+#         return {
+#             "success": True,
+#             "user_id": user_id,
+#             "question": request.question,
+#             "answer": response
+#         }
+        
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Error processing question: {str(e)}"
+#         )
+
+
+
+
+
+# if __name__ == "__main__":
+#     import uvicorn
+#     uvicorn.run(
+#         "main:app",
+#         host=os.getenv("HOST", "0.0.0.0"),
+#         port=int(os.getenv("PORT", 8000)),
+#         reload=True
+#     )
+
+
+
 import os
 from dotenv import load_dotenv
 
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from app import get_python_assistant
-
-
-
 
 load_dotenv()
 
 app = FastAPI(
     title="Python Learning Assistant",
-    description="Ask python related questions",
-    version="1.0.0"
+    description="Ask Python-related questions and get source-backed answers",
+    version="1.0.0",
 )
 
-# CORS middleware
+# CORS middleware (open for prototype)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-
-
 class PythonQuestion(BaseModel):
     question: str
-
-
-
 
 
 @app.get("/")
 def home():
     return {
         "message": "Welcome to Python Dojo",
-        
+        "usage": "POST /ask with a Python question",
     }
-
 
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint."""
     return {
         "status": "healthy",
-        "service": "Python guru is up and running"
+        "service": "Python Learning Assistant",
     }
 
 
-
-
-
 @app.post("/ask")
-def ask_python_question(
-    request: PythonQuestion,
-    # user_info: dict = Depends(verify_token)
-):
-    """Ask a coding related question"""
+def ask_python_question(request: PythonQuestion):
+    """
+    Ask a Python-related question.
+    Returns a grounded answer, optionally using documentation retrieval.
+    """
     try:
-        
         assistant = get_python_assistant()
-        # user_id = f"user_{user_info['user_id']}"
-        user_id = f"user_1"
+        user_id = "user_1"  # prototype user
 
-        
-        response = assistant.ask_question(
+        answer = assistant.ask_question(
             question=request.question,
-            user_id=user_id
+            user_id=user_id,
         )
-        
+
         return {
             "success": True,
             "user_id": user_id,
             "question": request.question,
-            "answer": response
+            "answer": answer,
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error processing question: {str(e)}"
+            detail=f"Error processing question: {str(e)}",
         )
-
-
-
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "main:app",
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", 8000)),
-        reload=True
+        reload=True,
     )

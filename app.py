@@ -1,12 +1,13 @@
 import os
 import sqlite3
 import pdfplumber
+import logging
 from dotenv import load_dotenv
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_core.documents import Document
 
@@ -14,7 +15,6 @@ from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-import logging
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
 load_dotenv()
@@ -23,16 +23,20 @@ load_dotenv()
 class PythonAssistant:
     def __init__(self, pdf_directory="files", db_path="docstore"):
         self.api_key = os.getenv("OPENAI_API_KEY")
+        if not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set")
+
         self.pdf_directory = pdf_directory
         self.db_path = db_path
 
-        # LLM & Embeddings
+        # LLM
         self.llm = ChatOpenAI(
             model="gpt-4o-mini",
             temperature=0,
             api_key=self.api_key,
         )
 
+        # Embeddings
         self.embeddings = OpenAIEmbeddings(
             model="text-embedding-3-small",
             api_key=self.api_key,
@@ -40,42 +44,40 @@ class PythonAssistant:
 
         # Vector store
         self.vector_store = self._initialize_vector_store()
+        print(f"[VectorStore] Ready")
 
-        count = self.vector_store._collection.count()
-        print(f"[VectorStore] Loaded {count} chunks")
-
-        # Tools & Graph
+        # Tools
         self.tools = self._setup_tools()
         self.tool_node = ToolNode(self.tools)
-        self.builder = self._build_graph()
 
-        # Checkpointer
+        # Graph
+        self.builder = self._build_graph()
         self.checkpointer = self._initialize_checkpointer()
+
+        # Compile ONCE
+        self.agent = self.builder.compile(checkpointer=self.checkpointer)
 
     def _initialize_checkpointer(self):
         os.makedirs("memory", exist_ok=True)
-        db_path = os.path.abspath("memory/conversations.db")
-        conn = sqlite3.connect(db_path, check_same_thread=False)
+        conn = sqlite3.connect(
+            os.path.abspath("memory/conversations.db"),
+            check_same_thread=False,
+        )
         return SqliteSaver(conn)
 
     def _setup_tools(self):
         @tool
         def retriever_tool(query: str) -> str:
-            """Retrieve relevant documentation chunks."""
-            retriever = self.vector_store.as_retriever(
-                search_type="mmr",
-                search_kwargs={"k": 5, "fetch_k": 15, "lambda_mult": 0.6},
-            )
-
+            """Retrieve relevant Python documentation."""
+            retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
             docs = retriever.invoke(query)
 
             if not docs:
-                return "No relevant documents found."
+                return "No relevant documentation found."
 
             return "\n\n---\n\n".join(
-                f"Source: {d.metadata.get('source', 'Unknown')} | "
-                f"Page: {d.metadata.get('page', 'N/A')}\n\n"
-                f"{d.page_content[:1200]}"
+                f"Source: {d.metadata.get('source')} | Page: {d.metadata.get('page')}\n\n"
+                f"{d.page_content[:1000]}"
                 for d in docs
             )
 
@@ -83,7 +85,6 @@ class PythonAssistant:
 
     def _load_all_pdfs(self):
         documents = []
-
         if not os.path.exists(self.pdf_directory):
             os.makedirs(self.pdf_directory)
             return documents
@@ -96,101 +97,104 @@ class PythonAssistant:
             with pdfplumber.open(path) as pdf:
                 for i, page in enumerate(pdf.pages):
                     text = page.extract_text() or ""
-                    if not text.strip():
-                        continue
-
-                    documents.append(
-                        Document(
-                            page_content=text,
-                            metadata={
-                                "source": filename,
-                                "page": i + 1,
-                            },
+                    if text.strip():
+                        documents.append(
+                            Document(
+                                page_content=text,
+                                metadata={
+                                    "source": filename,
+                                    "page": i + 1,
+                                },
+                            )
                         )
-                    )
         return documents
 
     def _initialize_vector_store(self):
         os.makedirs(self.db_path, exist_ok=True)
-        chroma_path = os.path.join(self.db_path, "chroma.sqlite3")
 
-        if os.path.exists(chroma_path):
+        try:
             return Chroma(
                 persist_directory=self.db_path,
                 embedding_function=self.embeddings,
             )
+        except Exception:
+            docs = self._load_all_pdfs()
+            if not docs:
+                return Chroma(
+                    persist_directory=self.db_path,
+                    embedding_function=self.embeddings,
+                )
 
-        docs = self._load_all_pdfs()
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200,
+            )
+            chunks = splitter.split_documents(docs)
 
-        if not docs:
-            return Chroma(
+            return Chroma.from_documents(
+                documents=chunks,
+                embedding=self.embeddings,
                 persist_directory=self.db_path,
-                embedding_function=self.embeddings,
             )
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-        )
-
-        chunks = splitter.split_documents(docs)
-
-        return Chroma.from_documents(
-            documents=chunks,
-            embedding=self.embeddings,
-            persist_directory=self.db_path,
-        )
+    def _is_basic_question(self, question: str) -> bool:
+        q = question.lower()
+        return q.startswith("what is") or q.startswith("define")
 
     def _build_graph(self):
         def assistant_node(state: MessagesState):
+            user_msg = state["messages"][-1].content
+
             system = SystemMessage(
                 content=(
-                    "You are a Python assistant. Only answer questions relating to python, otherwise decline, explaining you are only a python learrnig assistant."
-                    "Answer using general Python knowledge ONLY when user asks the most basic python questions that requires just definition and no extended responses. "
-                    "If the user asks about standards, medium or advanced python questions, use the retrieval tool."
-                    "also use retrieval when question requires extendend response than just definition."
-                    "Otherwise, answer directly ONLY for the most basic python knowledge."
+                    "You are a Python learning assistant.\n"
+                    "- Answer ONLY Python-related questions.\n"
+                    "- If the question is NOT about Python, politely refuse.\n"
+                    "- If the question is a basic definition, answer briefly WITHOUT tools.\n"
+                    "- For explanations, comparisons, best practices, or examples, USE the retrieval tool.\n"
+                    "- Be clear, concise, and educational."
                 )
             )
 
             messages = [system] + state["messages"]
-            llm_with_tools = self.llm.bind_tools(self.tools)
-            response = llm_with_tools.invoke(messages)
+
+            if self._is_basic_question(user_msg):
+                response = self.llm.invoke(messages)
+            else:
+                response = self.llm.bind_tools(self.tools).invoke(messages)
+
             return {"messages": [response]}
 
-        def check_tool_usage(state: MessagesState):
+        def route(state: MessagesState):
             last = state["messages"][-1]
             if hasattr(last, "tool_calls") and last.tool_calls:
                 return "tools"
             return END
 
         builder = StateGraph(MessagesState)
-
         builder.add_node("assistant", assistant_node)
         builder.add_node("tools", self.tool_node)
 
         builder.add_edge(START, "assistant")
-        builder.add_conditional_edges("assistant", check_tool_usage)
+        builder.add_conditional_edges("assistant", route)
         builder.add_edge("tools", "assistant")
 
         return builder
 
     def ask_question(self, question: str, user_id: str = "default"):
-        agent = self.builder.compile(checkpointer=self.checkpointer)
-
-        result = agent.invoke(
+        result = self.agent.invoke(
             {"messages": [HumanMessage(content=question)]},
             {"configurable": {"thread_id": user_id}},
         )
-
         return result["messages"][-1].content
 
 
-assistant = None
+# Singleton
+_assistant = None
 
 
 def get_python_assistant():
-    global assistant
-    if assistant is None:
-        assistant = PythonAssistant()
-    return assistant
+    global _assistant
+    if _assistant is None:
+        _assistant = PythonAssistant()
+    return _assistant
